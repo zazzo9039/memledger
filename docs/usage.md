@@ -160,7 +160,7 @@ memledger log --db ./memory.db --since 2026-07-07T00:00:00Z
 Use this to inspect the raw event ledger, filter by event type, or look at
 a single session timeline.
 
-### `memledger why ID [--db PATH]`
+### `memledger why ID [--db PATH] [--json]`
 
 Show the provenance graph for a record such as a tuple or instinct entry.
 
@@ -168,10 +168,13 @@ Example:
 
 ```bash
 memledger why tu_01J9ZKM3 --db ./memory.db
+memledger why tu_01J9ZKM3 --db ./memory.db --json
 ```
 
-The output is formatted JSON. It is the fastest way to answer questions
-such as:
+By default the command prints a human-readable provenance tree. Add
+`--json` to get the raw provenance payload returned by the Python API.
+
+It is the fastest way to answer questions such as:
 
 - Which turns created this memory?
 - Was it extracted, remembered manually, or seeded?

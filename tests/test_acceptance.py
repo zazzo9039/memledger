@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+import json
 from pathlib import Path
 from typing import Any
 
@@ -257,6 +258,31 @@ def test_remember_bypasses_quarantine_and_why_resolves_to_remember(
     assert record.confidence == 1.0
     why = ledger.why(record_id)
     assert why["creator"]["type"] == "remember"
+
+
+def test_cli_why_defaults_to_human_output_and_keeps_json_flag(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from memledger.cli import main
+
+    db_path = tmp_path / "cli-why.db"
+    ledger = Ledger(path=str(db_path), model_backend=MockModelBackend())
+    session = ledger.session(user_id="cli")
+    record_id = session.remember(("user", "preferred_language", "python"))
+    expected = ledger.why(record_id)
+    ledger.close()
+
+    assert main(["why", record_id, "--db", str(db_path)]) == 0
+    human_output = capsys.readouterr().out
+    assert human_output.startswith(f"{record_id}  (episodic, active)")
+    assert json.dumps(expected["record"]["text_form"], ensure_ascii=False) in human_output
+    assert "remembered" in human_output
+    assert not human_output.lstrip().startswith("{")
+
+    assert main(["why", record_id, "--db", str(db_path), "--json"]) == 0
+    json_output = capsys.readouterr().out
+    assert json.loads(json_output) == expected
 
 
 def test_regression_harness_passes_default_case() -> None:

@@ -41,6 +41,8 @@ tu_01J9ZKM3  (instinct, active)  "The user prefers Python as their language"
        └─ observed  se_91 turn 12  "again: Python examples only"
 ```
 
+Use `memledger why <id> --json` to print the raw provenance payload instead.
+
 ## The Four Pillars
 
 1.  **Pay for intelligence only when it matters.** A zero-cost,
