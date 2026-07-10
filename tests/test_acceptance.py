@@ -16,6 +16,7 @@ from memledger.models.openai_compat import OpenAICompatBackend
 from memledger.projection import StateTransitionError, validate_state_transition
 from memledger.session import Session
 from memledger.triage import score_text
+from memledger.tuples import make_tuple
 
 LedgerFactory = Callable[..., Ledger]
 
@@ -47,18 +48,32 @@ def ledger_factory(tmp_path: Path) -> Iterator[LedgerFactory]:
             pass
 
 
-def append_observed(session: Session, role: str, text: str) -> None:
-    turn = session.ledger.store.next_turn(session.id)
+def append_observed(
+    session: Session,
+    role: str,
+    text: str,
+    *,
+    ts: str | None = None,
+    turn: int | None = None,
+    extra_payload: dict[str, Any] | None = None,
+) -> str:
+    observed_turn = turn if turn is not None else session.ledger.store.next_turn(session.id)
+    payload: dict[str, Any] = {"role": role, "text": text, "turn": observed_turn}
+    if extra_payload:
+        payload.update(extra_payload)
     event = make_event(
         type="observed",
         actor="dev",
         cause=Cause(kind="signal", ref="observe", detail="test helper"),
         policy_hash=session.ledger.policy.hash,
-        payload={"role": role, "text": text, "turn": turn},
+        payload=payload,
         session=session.id,
         user=session.user_id,
     )
+    if ts is not None:
+        event.ts = ts
     session.ledger.append_event(event)
+    return event.id
 
 
 def test_rebuild_conformance(ledger_factory: LedgerFactory) -> None:
@@ -189,6 +204,59 @@ def test_merge_ignores_self_references(ledger_factory: LedgerFactory) -> None:
     record = ledger.store.get_record(into_id)
     assert record is not None
     assert record.status == "active"
+
+
+def test_build_context_preserves_temporal_qualifiers_and_chronology(
+    ledger_factory: LedgerFactory,
+) -> None:
+    ledger = ledger_factory()
+    session = ledger.session(user_id="dev")
+
+    early_source = append_observed(
+        session,
+        "user",
+        "I need to ship version 0.1.1 on Friday.",
+        ts="2026-07-10T09:00:00Z",
+        turn=1,
+    )
+    late_source = append_observed(
+        session,
+        "user",
+        "I decided to publish after the smoke tests pass.",
+        ts="2026-07-11T09:00:00Z",
+        turn=3,
+    )
+
+    later = make_tuple(
+        subject="user",
+        relation="decision",
+        value="publish after the smoke tests pass",
+        qualifiers={"when": "2026-07-11"},
+        confidence=0.95,
+        layer="episodic",
+        status="active",
+        ttl=ledger.policy.ttl_for_layer("episodic"),
+        sessions_seen=[session.id],
+        sources=[late_source],
+    )
+    earlier = make_tuple(
+        subject="user",
+        relation="deadline",
+        value="ship version 0.1.1",
+        qualifiers={"when": "2026-07-10"},
+        confidence=0.95,
+        layer="episodic",
+        status="active",
+        ttl=ledger.policy.ttl_for_layer("episodic"),
+        sessions_seen=[session.id],
+        sources=[early_source],
+    )
+
+    context = session.build_context(instinct=False, episodic=[later, earlier], working="tail")
+
+    assert "(as of 2026-07-10)" in context.system
+    assert "[observed 2026-07-10T09:00:00Z | turn 1]" in context.system
+    assert context.system.index(earlier.text_form) < context.system.index(later.text_form)
 
 
 def test_anti_poisoning_keeps_naive_extraction_quarantined(

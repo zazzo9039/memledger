@@ -7,8 +7,12 @@ import pytest
 
 from evals.run_locomo import NO_INFORMATION
 from evals.run_locomo import _token_f1
+from evals.run_locomo import format_memory_context
 from evals.run_locomo import load_samples, run_benchmark
+from memledger import Ledger, Policy
+from memledger.events import Cause, make_event
 from memledger.models.mock import MockModelBackend
+from memledger.tuples import make_tuple
 
 
 def test_locomo_runner_scores_small_fixture(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -141,6 +145,86 @@ def test_locomo_loader_accepts_category_5_adversarial_shape(tmp_path: Path) -> N
 
     assert samples[0].qa[0].answer == NO_INFORMATION
     assert samples[0].qa[0].adversarial_answer == "self-care is important"
+
+
+def test_locomo_memory_context_orders_records_by_dialogue_chronology(tmp_path: Path) -> None:
+    ledger = Ledger(
+        path=str(tmp_path / "locomo.db"),
+        policy=Policy.default(),
+        model_backend=MockModelBackend(),
+    )
+    try:
+        session = ledger.session(user_id="conv-mini")
+        early_event = make_event(
+            type="observed",
+            actor="dev",
+            cause=Cause(kind="signal", ref="observe", detail="locomo test helper"),
+            policy_hash=ledger.policy.hash,
+            payload={
+                "role": "alice",
+                "text": "I started guitar lessons yesterday, on 7 May 2023.",
+                "turn": 1,
+                "dia_id": "D1:1",
+                "date_time": "7 May 2023",
+            },
+            session=session.id,
+            user=session.user_id,
+        )
+        late_event = make_event(
+            type="observed",
+            actor="dev",
+            cause=Cause(kind="signal", ref="observe", detail="locomo test helper"),
+            policy_hash=ledger.policy.hash,
+            payload={
+                "role": "alice",
+                "text": "I am still enjoying guitar practice.",
+                "turn": 3,
+                "dia_id": "D2:1",
+                "date_time": "15 May 2023",
+            },
+            session=session.id,
+            user=session.user_id,
+        )
+        ledger.append_event(early_event)
+        ledger.append_event(late_event)
+
+        early_record = make_tuple(
+            subject="alice",
+            relation="deadline",
+            value="start guitar lessons",
+            qualifiers={"when": "2023-05-07"},
+            confidence=0.95,
+            layer="episodic",
+            status="active",
+            ttl=ledger.policy.ttl_for_layer("episodic"),
+            sessions_seen=[session.id],
+            sources=[early_event.id],
+            text_form="Alice started guitar lessons on 7 May 2023.",
+        )
+        late_record = make_tuple(
+            subject="alice",
+            relation="decision",
+            value="keep practicing guitar",
+            qualifiers={"when": "2023-05-15"},
+            confidence=0.95,
+            layer="episodic",
+            status="active",
+            ttl=ledger.policy.ttl_for_layer("episodic"),
+            sessions_seen=[session.id],
+            sources=[late_event.id],
+            text_form="Alice is learning guitar.",
+        )
+        ledger.store.upsert_record(early_record)
+        ledger.store.upsert_record(late_record)
+
+        memory_context, retrieved_dia_ids = format_memory_context(ledger, [late_record.id, early_record.id])
+
+        lines = memory_context.splitlines()
+        assert lines[0] == "Memory 1 [D1:1 | 7 May 2023]: alice has a deadline: start guitar lessons (as of 2023-05-07)."
+        assert lines[2] == "Memory 2 [D2:1 | 15 May 2023]: alice decided: keep practicing guitar (as of 2023-05-15)."
+        assert retrieved_dia_ids == ("D1:1", "D2:1")
+    finally:
+        ledger.close()
 
 
 def test_official_locomo_token_f1_uses_stemming() -> None:

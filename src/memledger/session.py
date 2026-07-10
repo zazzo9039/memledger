@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from memledger.checkpoint import CheckpointReport, run_checkpoint
-from memledger.events import Cause, make_event
+from memledger.events import Cause, Event, make_event
 from memledger.ids import new_id
 from memledger.retrieval import retrieve
 from memledger.tuples import MemoryTuple, make_tuple
@@ -20,6 +20,47 @@ if TYPE_CHECKING:
 class Context:
     system: str
     messages: list[dict[str, str]]
+
+
+def _observed_turn(event: Event) -> int:
+    try:
+        return int(event.payload.get("turn", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _record_source_events(ledger: Ledger, record: MemoryTuple) -> list[Event]:
+    observed: list[Event] = []
+    for source_id in record.sources:
+        event = ledger.store.get_event(source_id)
+        if event is None or event.type != "observed":
+            continue
+        observed.append(event)
+    observed.sort(key=lambda event: (event.ts, _observed_turn(event), event.id))
+    return observed
+
+
+def _record_chronology_key(ledger: Ledger, record: MemoryTuple) -> tuple[str, str, int, str]:
+    observed = _record_source_events(ledger, record)
+    source_ts = observed[0].ts if observed else record.created_ts
+    primary_ts = str(record.qualifiers.get("when", "")).strip() or source_ts
+    source_turn = _observed_turn(observed[0]) if observed else 0
+    return (primary_ts, source_ts, source_turn, record.id)
+
+
+def _render_context_record(ledger: Ledger, record: MemoryTuple) -> str:
+    observed = _record_source_events(ledger, record)
+    details: list[str] = []
+    if observed:
+        details.append(f"observed {observed[0].ts}")
+        turn = _observed_turn(observed[0])
+        if turn:
+            details.append(f"turn {turn}")
+    elif record.created_ts:
+        details.append(f"recorded {record.created_ts}")
+    if not details:
+        return f"- {record.text_form}"
+    return f"- [{' | '.join(details)}] {record.text_form}"
 
 
 class Session:
@@ -142,10 +183,13 @@ class Session:
             if instinct_records:
                 system_lines.append("Instinct memory:")
                 system_lines.extend(f"- {record.text_form}" for record in instinct_records)
-        episodic_records = list(episodic)
+        episodic_records = sorted(
+            list(episodic),
+            key=lambda record: _record_chronology_key(self.ledger, record),
+        )
         if episodic_records:
             system_lines.append("Relevant episodic memory:")
-            system_lines.extend(f"- {record.text_form}" for record in episodic_records)
+            system_lines.extend(_render_context_record(self.ledger, record) for record in episodic_records)
         return Context(system="\n".join(system_lines), messages=messages)
 
     def checkpoint(self) -> CheckpointReport:

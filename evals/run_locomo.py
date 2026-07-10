@@ -605,15 +605,35 @@ def collect_record_evidence(ledger: Ledger, record_id: str) -> list[EvidenceSnip
     return evidence
 
 
+def _dia_id_key(dia_id: str) -> tuple[int, int, str]:
+    match = re.fullmatch(r"D(\d+):(\d+)", dia_id)
+    if match is None:
+        return (math.inf, math.inf, dia_id)
+    return (int(match.group(1)), int(match.group(2)), dia_id)
+
+
 def format_memory_context(ledger: Ledger, record_ids: Sequence[str]) -> tuple[str, tuple[str, ...]]:
-    lines: list[str] = []
-    retrieved_dia_ids: list[str] = []
-    for index, record_id in enumerate(record_ids, start=1):
+    entries: list[tuple[tuple[int, int, str], Any, list[EvidenceSnippet]]] = []
+    for record_id in record_ids:
         record = ledger.store.get_record(record_id)
         if record is None:
             continue
-        lines.append(f"Memory {index}: {record.text_form}")
-        for snippet in collect_record_evidence(ledger, record_id)[:3]:
+        evidence = sorted(collect_record_evidence(ledger, record_id), key=lambda snippet: _dia_id_key(snippet.dia_id))
+        key = _dia_id_key(evidence[0].dia_id) if evidence else (math.inf, math.inf, record.id)
+        entries.append((key, record, evidence))
+    entries.sort(key=lambda entry: entry[0])
+
+    lines: list[str] = []
+    retrieved_dia_ids: list[str] = []
+    for index, (_key, record, evidence) in enumerate(entries, start=1):
+        if evidence:
+            details = evidence[0].dia_id or "unknown"
+            if evidence[0].date_time:
+                details = f"{details} | {evidence[0].date_time}"
+            lines.append(f"Memory {index} [{details}]: {record.text_form}")
+        else:
+            lines.append(f"Memory {index}: {record.text_form}")
+        for snippet in evidence[:3]:
             details = snippet.dia_id or "unknown"
             if snippet.date_time:
                 details = f"{details} | {snippet.date_time}"
