@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import array
+import heapq
 import json
 import math
 import os
@@ -435,7 +436,7 @@ class LedgerStore:
     ) -> list[tuple[str, float]]:
         if limit <= 0:
             return []
-        rows = self.connection.execute(
+        cursor = self.connection.execute(
             """
             SELECT v.id, v.vector
             FROM vectors v
@@ -443,14 +444,13 @@ class LedgerStore:
             WHERE v.index_version = ? AND r.status NOT IN ('deleted', 'superseded', 'expired')
             """,
             (index_version,),
-        ).fetchall()
+        )
         scored_rows: list[tuple[str, float]] = []
-        for row in rows:
+        for row in cursor:
             score = _cosine_similarity(query_vec, _unpack_vector(bytes(row[1])))
             if score > 0.0:
                 scored_rows.append((str(row[0]), score))
-        scored_rows.sort(key=lambda item: (-item[1], item[0]))
-        return scored_rows[:limit]
+        return heapq.nsmallest(limit, scored_rows, key=lambda item: (-item[1], item[0]))
 
     def clear_projections(self) -> None:
         self.connection.executescript(

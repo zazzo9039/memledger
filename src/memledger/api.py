@@ -323,10 +323,22 @@ class Ledger:
         index_version = self.embedder.index_version
         self.store.ensure_vector_index_version(index_version)
         indexed = 0
-        for record in self.projection.active_or_quarantined_records():
-            if not self.store.has_vector(record.id, index_version):
-                self.store.upsert_record(record)
-                indexed += 1
+        with self.store.transaction():
+            for record in self.projection.active_or_quarantined_records():
+                if self.store.has_vector(record.id, index_version):
+                    continue
+                if not record.text_form.strip():
+                    continue
+                try:
+                    vector = self.embedder.embed([record.text_form])[0]
+                    self.store._upsert_vector(record.id, vector, index_version)
+                    indexed += 1
+                except Exception as exc:
+                    warnings.warn(
+                        f"skipped vector index for {record.id}: {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
         return indexed
 
     def delete(self, record_id: str, *, cascade: bool = False, reason: str = "manual") -> None:

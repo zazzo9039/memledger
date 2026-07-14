@@ -180,7 +180,7 @@ def retrieve(
                 "candidates": logged_candidates,
                 "selected": selected_ids,
                 "reasons": reasons,
-                "index_version": "hybrid" if session.ledger.embedder is not None else "fts5",
+                "index_version": f"hybrid:{session.ledger.embedder.index_version}" if session.ledger.embedder is not None else "fts5",
             },
             session=session.id,
             user=session.user_id,
